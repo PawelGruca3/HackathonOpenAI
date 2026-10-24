@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-24T12:22:46.790Z",
+  "title": "Design System: Intake",
+  "extensions": {
+    "breakpoints": [
+      {
+        "name": "web-list-detail",
+        "value": "700px"
+      },
+      {
+        "name": "web-compact-list",
+        "value": "1000px"
+      }
+    ],
+    "motion": [
+      {
+        "name": "web-state",
+        "value": "150ms",
+        "purpose": "Button background and opacity states."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "description": "Intake action.",
+      "html": "<button class=\"ds-action\">Continue</button>",
+      "css": ".ds-action{font:700 16px sans-serif;background:#171717;color:#ffffff;border:0;border-radius:12px;padding:14px 20px;min-height:52px;cursor:pointer}.ds-action:hover{opacity:.85}.ds-action:active{opacity:.75}.ds-action:focus-visible{outline:3px solid #84aafb;outline-offset:3px}"
+    },
+    {
+      "name": "Secondary action",
+      "kind": "button",
+      "description": "Intake action.",
+      "html": "<button class=\"ds-action\">Continue</button>",
+      "css": ".ds-action{font:700 16px sans-serif;background:#ffffff;color:#242424;border:1px solid #e3e3e3;border-radius:12px;padding:14px 20px;min-height:52px;cursor:pointer}.ds-action:hover{opacity:.85}.ds-action:active{opacity:.75}.ds-action:focus-visible{outline:3px solid #84aafb;outline-offset:3px}"
+    },
+    {
+      "name": "Text field",
+      "kind": "input",
+      "description": "Native-intake field translated to standalone HTML.",
+      "html": "<input class=\"ds-field\" aria-label=\"Symptoms\" placeholder=\"Describe your symptoms\"/>",
+      "css": ".ds-field{font:16px sans-serif;border:1px solid #d0d0d0;border-radius:10px;padding:14px;color:#171717;background:white}.ds-field:focus-visible{outline:3px solid #84aafb;outline-offset:3px}"
+    },
+    {
+      "name": "Selected area",
+      "kind": "chip",
+      "description": "Selected region or filter.",
+      "html": "<button class=\"ds-chip\">Left arm</button>",
+      "css": ".ds-chip{font:600 13px sans-serif;background:#f5f8fd;color:#242424;border:1px solid #175fc2;border-radius:10px;padding:12px 14px}.ds-chip:hover{opacity:.85}.ds-chip:focus-visible{outline:3px solid #84aafb;outline-offset:3px}"
+    },
+    {
+      "name": "Intake card",
+      "kind": "card",
+      "description": "Patient content grouping.",
+      "html": "<section class=\"ds-card\">Your original intake</section>",
+      "css": ".ds-card{font:15px sans-serif;background:white;color:#171717;border:1px solid #e3e3e3;border-radius:14px;padding:18px}"
+    },
+    {
+      "name": "Back navigation",
+      "kind": "nav",
+      "description": "Return to the preceding patient screen.",
+      "html": "<nav><button class=\"ds-back\">Back</button></nav>",
+      "css": ".ds-back{font:600 15px sans-serif;background:transparent;color:#175fc2;border:0;min-height:44px;padding:8px}.ds-back:hover{background:#ffffff}.ds-back:focus-visible{outline:3px solid #84aafb;outline-offset:3px}"
+    }
+  ],
+  "narrative": {
+    "overview": "The patient app and clinician workspace use white surfaces, neutral gray supporting elements, black primary actions and restrained blue accents. Original symptoms, separate intensity and urgency signals, and the next useful action take priority.",
+    "keyCharacteristics": [
+      "Original body assets",
+      "Separate intensity and urgency labels",
+      "Assessment-first clinician packet"
+    ],
+    "rules": [],
+    "dos": [
+      "Do retain separate labels for patient intensity and AI urgency.",
+      "Do identify demo output and fictional directory entries at their point of use.",
+      "Do preserve the original body assets and provide editable region corrections."
+    ],
+    "donts": [
+      "Don't present an AI estimate as a diagnosis or a guarantee of safety."
+    ]
+  }
+}

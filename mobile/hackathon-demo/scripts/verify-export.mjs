@@ -1,0 +1,12 @@
+import {spawnSync} from 'node:child_process';
+import {statSync} from 'node:fs';
+import path from 'node:path';
+const target=path.resolve(import.meta.dirname,'../out/intake-hackathon-demo.mp4');
+const probe=spawnSync('ffprobe',['-v','error','-show_entries','format=duration,size:stream=codec_name,codec_type,width,height,r_frame_rate,nb_frames','-of','json',target],{encoding:'utf8'});
+if(probe.status!==0)throw new Error(probe.stderr);
+const metadata=JSON.parse(probe.stdout);
+const video=metadata.streams.find(stream=>stream.codec_type==='video');
+if(!video||video.codec_name!=='h264'||video.width!==1920||video.height!==1080||video.r_frame_rate!=='30/1'||Number(video.nb_frames)!==3600||Math.abs(Number(metadata.format.duration)-120)>.001)throw new Error('Submission export metadata does not match the 120-second 1080p specification.');
+const decode=spawnSync('ffmpeg',['-v','error','-i',target,'-f','null','-'],{encoding:'utf8'});
+if(decode.status!==0||decode.stderr.trim())throw new Error('Export decoding failed: '+decode.stderr);
+console.log(JSON.stringify({file:target,durationSeconds:Number(metadata.format.duration),width:video.width,height:video.height,fps:30,frames:Number(video.nb_frames),codec:video.codec_name,megabytes:Number((statSync(target).size/1000000).toFixed(2)),fullDecode:'passed'},null,2));

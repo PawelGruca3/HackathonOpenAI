@@ -55,8 +55,8 @@ One screen, one job: capture where it hurts and what it feels like.
 
 - Dominant center: rotatable / pose-adjustable anatomical body (male or female mesh).
 - Limited **pose presets** (e.g. neutral, arms raised, turned) so regions like armpits are reachable — not free IK.
-- Multi-region selection: patient taps areas and paints intensity on a green → yellow → red scale (patient-reported only).
-- Intensity control beside/near the model (slider or stepped control).
+- Free surface painting: the patient paints any visible point on the mesh. Holding builds a white-to-red heat map; exact surface positions and intensity are saved. Region labels are derived for clinical summaries.
+- Separate Paint and Rotate modes, Undo and Clear, with accessible area/intensity buttons as an alternative to gestures. No intensity slider.
 - Bottom: free-text symptoms (what they feel, the problem, concrete description for AI and doctor).
 - Editable vitals on this screen: height, weight, sex (drives which body model).
 
@@ -155,7 +155,7 @@ Each **case** is the unit of care intake:
 - In-app appointment booking or telehealth video  
 - Insurance eligibility / public–private plan filtering for discovery  
 - Free-form limb posing or non-binary body models in the first product shape  
-- Drawing annotations on photos or the 3D body (text annotations only)
+- Clinician drawing annotations on photos or the 3D body (clinician annotations are text only; patient symptom painting is supported)
 
 ---
 

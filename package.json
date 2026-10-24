@@ -1,0 +1,14 @@
+{
+  "name": "healthcare-intake", "private": true, "version": "1.0.0", "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "web": "npm run dev --workspace @intake/web",
+    "mobile": "npm run start --workspace hackathon-openai-mobile",
+    "typecheck": "tsc --noEmit -p packages/shared && tsc --noEmit -p apps/web && tsc --noEmit -p apps/mobile",
+    "lint": "eslint apps packages tests",
+    "test": "tsx --test tests/*.test.ts",
+    "build": "npm run build --workspace @intake/web"
+  },
+  "devDependencies": { "typescript": "~6.0.3", "tsx": "^4.20.6", "eslint": "^9.39.0", "typescript-eslint": "^8.46.0", "@eslint/js": "^9.39.0", "@types/node": "^24.0.0", "@types/react": "~19.3.0", "@types/react-dom": "^19.2.0" }
+}

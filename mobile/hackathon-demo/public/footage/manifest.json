@@ -1,0 +1,52 @@
+{
+  "01-start": {
+    "duration": 8.005,
+    "frames": 97,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "02-body-knee": {
+    "duration": 18.004,
+    "frames": 248,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "03-symptoms": {
+    "duration": 16.012,
+    "frames": 298,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "04-photo": {
+    "duration": 14.033,
+    "frames": 233,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "05-ai-summary": {
+    "duration": 3.433,
+    "frames": 52,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "05-result": {
+    "duration": 18.003,
+    "frames": 319,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "06-discovery": {
+    "duration": 10.014,
+    "frames": 124,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "07-clinician-review": {
+    "duration": 12.053,
+    "frames": 171,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "08-clinician-note": {
+    "duration": 10.072,
+    "frames": 147,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  },
+  "09-patient-handoff": {
+    "duration": 10.035,
+    "frames": 146,
+    "source": "Actual app screen capture, with original wall-clock frame timing"
+  }
+}
