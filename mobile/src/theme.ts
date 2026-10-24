@@ -7,5 +7,4 @@ export const colors = {
   textMuted: '#64748b',
   primary: '#2563eb',
   primaryPressed: '#1d4ed8',
-  disabled: '#cbd5e1',
 };

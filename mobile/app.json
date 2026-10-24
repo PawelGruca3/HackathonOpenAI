@@ -32,7 +32,8 @@
           "cameraPermission": "Allow $(PRODUCT_NAME) to use your camera so you can photograph a symptom for your doctor.",
           "microphonePermission": false
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true

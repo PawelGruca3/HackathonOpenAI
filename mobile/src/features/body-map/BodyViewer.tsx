@@ -1,161 +1,313 @@
 import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
-import { useEffect, useRef, useState } from 'react';
-import { PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
+import { ActivityIndicator, PanResponder, Platform, Pressable, StyleSheet, Text, View, type GestureResponderEvent } from 'react-native';
 import * as THREE from 'three';
 
-import {
-  createBodyModel,
-  BODY_HEIGHT,
-  layerOpacityAt,
-  partLabel,
-  type BodyModel,
-  type BodyPart,
-  type LayerIndex,
-} from './bodyModel';
-
-export type BodySelection = {
-  /** Stable key for the tapped region, e.g. "skin-knee:left:front". */
-  key: string;
-  label: string;
-  layer: LayerIndex;
-};
+import { BODY_HEIGHT, loadBodyModel, type BodyModel, type BodySex } from './bodyModel';
 
 type Props = {
-  /** 0 = skin ... 3 = bones. Fractional values cross-fade between layers. */
-  depth: number;
-  highlightColor: string;
-  selection: BodySelection | null;
-  onSelect: (selection: BodySelection) => void;
+  sex: BodySex;
   background: string;
 };
 
 const FOV = 30;
-const ROTATE_PER_PX = 0.012;
-const MIN_ZOOM = 0.3; // fraction of the "whole body fits" distance
+const ROTATE_PER_PX = 0.01;
+const MAX_PITCH = THREE.MathUtils.degToRad(85);
+/** Zoom is the camera distance as a fraction of the "whole body fits" distance. */
+const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 1.25;
-const TAP_SLOP_PX = 6;
-const TAP_MAX_MS = 400;
+/** Zoom level a double-tap jumps to. */
+const FOCUS_ZOOM = 0.35;
+const TAP_SLOP_PX = 8;
+const TAP_MAX_MS = 250;
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_PX = 30;
 
 const clamp = THREE.MathUtils.clamp;
 
-type ViewState = {
-  rotY: number;
-  spin: number;
-  turn: number;
-  zoom: number;
-  zoomTarget: number;
-  panY: number;
-  depth: number;
-  dragging: boolean;
-  /** Layout size in points (used for picking and panning). */
-  width: number;
-  height: number;
-  fitDistance: number;
+type Facing = 'front' | 'back' | 'top' | 'bottom';
+
+const FACING_LABELS: Record<Facing, string> = {
+  front: 'Front view',
+  back: 'Back view',
+  top: 'Top view',
+  bottom: 'Bottom view',
 };
 
-export function BodyViewer({ depth, highlightColor, selection, onSelect, background }: Props) {
+/**
+ * Orbit camera around a target point. Gestures write the *goal* values (and,
+ * for direct finger tracking, the current ones too); each frame eases the
+ * current values toward the goals so buttons and double-taps animate.
+ */
+type ViewState = {
+  yaw: number;
+  pitch: number;
+  spinYaw: number;
+  spinPitch: number;
+  /** Remaining yaw of a Turn-button animation. */
+  turn: number;
+  /** Ease pitch back to level (after Reset). */
+  levelling: boolean;
+  zoom: number;
+  zoomGoal: number;
+  target: THREE.Vector3;
+  targetGoal: THREE.Vector3;
+  touching: boolean;
+  /** Layout of the view in points; pageX/pageY are its window position. */
+  width: number;
+  height: number;
+  pageX: number;
+  pageY: number;
+  fitDistance: number;
+  /** Horizontal reach of the current model; the camera backs off to keep it in view. */
+  bodyRadius: number;
+  needsFit: boolean;
+  /** Camera's screen-right and screen-up directions in world space. */
+  right: THREE.Vector3;
+  up: THREE.Vector3;
+};
+
+export function BodyViewer({ sex, background }: Props) {
   const view = useRef<ViewState>({
-    rotY: 0,
-    spin: 0,
+    yaw: 0,
+    pitch: 0,
+    spinYaw: 0,
+    spinPitch: 0,
     turn: 0,
+    levelling: false,
     zoom: 1,
-    zoomTarget: 1,
-    panY: 0,
-    depth,
-    dragging: false,
+    zoomGoal: 1,
+    target: new THREE.Vector3(),
+    targetGoal: new THREE.Vector3(),
+    touching: false,
     width: 0,
     height: 0,
+    pageX: 0,
+    pageY: 0,
     fitDistance: 4,
+    bodyRadius: 0.45,
+    needsFit: true,
+    right: new THREE.Vector3(1, 0, 0),
+    up: new THREE.Vector3(0, 1, 0),
   }).current;
-  const props = useRef({ depth, highlightColor, selection, onSelect });
-  props.current = { depth, highlightColor, selection, onSelect };
 
-  const pickRef = useRef<(x: number, y: number) => void>(() => {});
+  // The GL scene and the model load independently; whichever finishes last
+  // puts the model into the scene.
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const bodyRef = useRef<BodyModel | null>(null);
+  const pickRef = useRef<(x: number, y: number) => THREE.Vector3 | null>(() => null);
   const cleanupRef = useRef<() => void>(() => {});
-  const [facing, setFacing] = useState<'front' | 'back'>('front');
+  const containerRef = useRef<ComponentRef<typeof View>>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [facing, setFacing] = useState<Facing>('front');
 
-  useEffect(() => () => cleanupRef.current(), []);
+  const showBody = (next: BodyModel) => {
+    const scene = sceneRef.current;
+    const previous = bodyRef.current;
+    if (previous && previous !== next) {
+      scene?.remove(previous.root);
+      previous.dispose();
+    }
+    bodyRef.current = next;
+    view.bodyRadius = next.radius;
+    view.needsFit = true;
+    if (scene && next.root.parent !== scene) scene.add(next.root);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFailed(false);
+    loadBodyModel(sex)
+      .then((model) => {
+        if (cancelled) return model.dispose();
+        showBody(model);
+        setLoading(false);
+      })
+      .catch((error) => {
+        console.warn('Failed to load body model', error);
+        if (!cancelled) {
+          setFailed(true);
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sex]);
+
+  useEffect(
+    () => () => {
+      cleanupRef.current();
+      bodyRef.current?.dispose();
+    },
+    [],
+  );
+
+  // --- Camera moves -------------------------------------------------------
+
+  const worldPerPx = (zoom: number) =>
+    (2 * view.fitDistance * zoom * Math.tan(THREE.MathUtils.degToRad(FOV / 2))) / Math.max(view.height, 1);
+
+  /** Zoom by `factor` while keeping the point under (x, y) fixed on screen. */
+  const zoomAt = (x: number, y: number, factor: number, immediate: boolean) => {
+    const from = view.zoomGoal;
+    const to = clamp(from * factor, MIN_ZOOM, MAX_ZOOM);
+    const perPx = worldPerPx(from);
+    const offset = new THREE.Vector3()
+      .addScaledVector(view.right, (x - view.width / 2) * perPx)
+      .addScaledVector(view.up, -(y - view.height / 2) * perPx);
+    view.targetGoal.addScaledVector(offset, 1 - to / from);
+    view.zoomGoal = to;
+    if (immediate) {
+      view.zoom = view.zoomGoal;
+      view.target.copy(view.targetGoal);
+    }
+  };
+
+  /** Move the view with the fingers (screen-space drag in points). */
+  const pan = (dx: number, dy: number) => {
+    const perPx = worldPerPx(view.zoomGoal);
+    view.targetGoal.addScaledVector(view.right, -dx * perPx).addScaledVector(view.up, dy * perPx);
+    view.target.copy(view.targetGoal);
+  };
+
+  const zoomCentre = (factor: number) => zoomAt(view.width / 2, view.height / 2, factor, false);
+
+  const reset = () => {
+    view.zoomGoal = 1;
+    view.targetGoal.set(0, 0, 0);
+    view.levelling = true;
+  };
+
+  const onDoubleTap = (x: number, y: number) => {
+    if (view.zoomGoal < 0.6) return reset();
+    const hit = pickRef.current(x, y);
+    if (hit) {
+      view.targetGoal.copy(hit);
+      view.zoomGoal = FOCUS_ZOOM;
+    } else {
+      zoomAt(x, y, FOCUS_ZOOM / view.zoomGoal, false);
+    }
+  };
+
+  // --- Gestures -----------------------------------------------------------
 
   const gesture = useRef({
+    mode: 'none' as 'none' | 'rotate' | 'pinch',
     startX: 0,
     startY: 0,
+    startTime: 0,
+    moved: false,
+    multiTouch: false,
     lastX: 0,
     lastY: 0,
-    lastMoveTime: 0,
+    lastTime: 0,
     velocityX: 0,
-    startTime: 0,
-    tapX: 0,
-    tapY: 0,
-    moved: false,
-    pinching: false,
+    velocityY: 0,
     pinchDist: 0,
-    pinchZoom: 1,
+    midX: 0,
+    midY: 0,
+    lastTapTime: 0,
+    lastTapX: 0,
+    lastTapY: 0,
   }).current;
 
+  // Movement is tracked from page coordinates rather than gestureState, whose
+  // shared touch history can be stale on web.
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (evt) => {
-        // Movement is tracked from this event's own page coordinates rather than
-        // gestureState, whose shared touch history can be stale on web.
+        const { pageX, pageY, touches } = evt.nativeEvent;
         Object.assign(gesture, {
-          startX: evt.nativeEvent.pageX,
-          startY: evt.nativeEvent.pageY,
-          lastX: evt.nativeEvent.pageX,
-          lastY: evt.nativeEvent.pageY,
-          lastMoveTime: Date.now(),
-          velocityX: 0,
+          mode: 'none',
+          startX: pageX,
+          startY: pageY,
           startTime: Date.now(),
-          tapX: evt.nativeEvent.locationX,
-          tapY: evt.nativeEvent.locationY,
           moved: false,
-          pinching: false,
+          multiTouch: (touches?.length ?? 1) > 1,
         });
-        view.dragging = true;
-        view.spin = 0;
+        view.touching = true;
+        view.spinYaw = 0;
+        view.spinPitch = 0;
+        view.turn = 0;
+        view.levelling = false;
+        // Finish any running animation where it is, so fingers take over smoothly.
+        view.zoomGoal = view.zoom;
+        view.targetGoal.copy(view.target);
+        track(evt);
       },
-      onPanResponderMove: (evt) => {
-        const touches = evt.nativeEvent.touches ?? [];
-        if (touches.length >= 2) {
-          const d = Math.hypot(touches[0].pageX - touches[1].pageX, touches[0].pageY - touches[1].pageY);
-          if (!gesture.pinching) {
-            gesture.pinching = true;
-            gesture.pinchDist = d;
-            gesture.pinchZoom = view.zoomTarget;
-          }
-          view.zoomTarget = clamp((gesture.pinchZoom * gesture.pinchDist) / Math.max(d, 1), MIN_ZOOM, MAX_ZOOM);
-          gesture.moved = true;
-          return;
-        }
-        if (gesture.pinching) return; // ignore the leftover finger after a pinch
-        const { pageX, pageY } = evt.nativeEvent;
-        if (Math.abs(pageX - gesture.startX) > TAP_SLOP_PX || Math.abs(pageY - gesture.startY) > TAP_SLOP_PX) gesture.moved = true;
-        const ddx = pageX - gesture.lastX;
-        const ddy = pageY - gesture.lastY;
-        const now = Date.now();
-        gesture.velocityX = ddx / Math.max(now - gesture.lastMoveTime, 1);
-        gesture.lastX = pageX;
-        gesture.lastY = pageY;
-        gesture.lastMoveTime = now;
-        view.rotY += ddx * ROTATE_PER_PX;
-        const worldPerPx = (2 * view.fitDistance * view.zoom * Math.tan(THREE.MathUtils.degToRad(FOV / 2))) / Math.max(view.height, 1);
-        view.panY += ddy * worldPerPx;
-      },
+      onPanResponderMove: (evt) => track(evt),
       onPanResponderRelease: () => {
-        view.dragging = false;
-        if (!gesture.moved && Date.now() - gesture.startTime < TAP_MAX_MS) {
-          pickRef.current(gesture.tapX, gesture.tapY);
-        } else if (!gesture.pinching && Date.now() - gesture.lastMoveTime < 80) {
-          view.spin = gesture.velocityX * ROTATE_PER_PX * 16; // px/ms -> radians per 60fps frame
+        view.touching = false;
+        const now = Date.now();
+        if (!gesture.moved && !gesture.multiTouch && now - gesture.startTime < TAP_MAX_MS) {
+          onTap(gesture.startX - view.pageX, gesture.startY - view.pageY);
+        } else if (gesture.mode === 'rotate' && now - gesture.lastTime < 80) {
+          view.spinYaw = -gesture.velocityX * ROTATE_PER_PX * 16; // px/ms -> radians per 60fps frame
+          view.spinPitch = gesture.velocityY * ROTATE_PER_PX * 16;
         }
       },
       onPanResponderTerminate: () => {
-        view.dragging = false;
+        view.touching = false;
       },
     }),
   ).current;
+
+  function track(evt: GestureResponderEvent) {
+    const touches = evt.nativeEvent.touches ?? [];
+    const now = Date.now();
+
+    if (touches.length >= 2) {
+      gesture.multiTouch = true;
+      gesture.moved = true;
+      const [a, b] = touches;
+      const dist = Math.hypot(a.pageX - b.pageX, a.pageY - b.pageY);
+      const midX = (a.pageX + b.pageX) / 2;
+      const midY = (a.pageY + b.pageY) / 2;
+      if (gesture.mode === 'pinch') {
+        // Zoom toward the point between the fingers, and follow them as they move.
+        zoomAt(midX - view.pageX, midY - view.pageY, gesture.pinchDist / Math.max(dist, 1), true);
+        pan(midX - gesture.midX, midY - gesture.midY);
+      }
+      Object.assign(gesture, { mode: 'pinch', pinchDist: dist, midX, midY });
+      return;
+    }
+
+    const { pageX, pageY } = evt.nativeEvent;
+    if (gesture.mode !== 'rotate') {
+      // First finger down, or one finger left over after a pinch.
+      Object.assign(gesture, { mode: 'rotate', lastX: pageX, lastY: pageY, lastTime: now, velocityX: 0, velocityY: 0 });
+      return;
+    }
+    if (Math.abs(pageX - gesture.startX) > TAP_SLOP_PX || Math.abs(pageY - gesture.startY) > TAP_SLOP_PX) gesture.moved = true;
+    if (!gesture.moved) return;
+
+    const dx = pageX - gesture.lastX;
+    const dy = pageY - gesture.lastY;
+    const dt = Math.max(now - gesture.lastTime, 1);
+    view.yaw -= dx * ROTATE_PER_PX;
+    view.pitch = clamp(view.pitch + dy * ROTATE_PER_PX, -MAX_PITCH, MAX_PITCH);
+    Object.assign(gesture, { lastX: pageX, lastY: pageY, lastTime: now, velocityX: dx / dt, velocityY: dy / dt });
+  }
+
+  function onTap(x: number, y: number) {
+    const now = Date.now();
+    const isDouble =
+      now - gesture.lastTapTime < DOUBLE_TAP_MS && Math.hypot(x - gesture.lastTapX, y - gesture.lastTapY) < DOUBLE_TAP_PX;
+    if (isDouble) {
+      gesture.lastTapTime = 0;
+      onDoubleTap(x, y);
+    } else {
+      Object.assign(gesture, { lastTapTime: now, lastTapX: x, lastTapY: y });
+    }
+  }
+
+  // --- Rendering ----------------------------------------------------------
 
   const onContextCreate = (gl: ExpoWebGLRenderingContext) => {
     let width = gl.drawingBufferWidth;
@@ -182,86 +334,41 @@ export function BodyViewer({ depth, highlightColor, selection, onSelect, backgro
     renderer.setClearColor(background, 1);
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(FOV, width / height, 0.05, 50);
+    const camera = new THREE.PerspectiveCamera(FOV, width / height, 0.02, 50);
 
-    scene.add(new THREE.HemisphereLight('#ffffff', '#9aa7b8', 1.6));
+    // Lights travel with the camera so whatever you look at is lit.
+    scene.add(new THREE.HemisphereLight('#ffffff', '#9aa7b8', 1.4));
+    scene.add(camera);
     const key = new THREE.DirectionalLight('#ffffff', 2.2);
-    key.position.set(1.5, 2.5, 4);
-    scene.add(key);
-    const rim = new THREE.DirectionalLight('#dbe7ff', 0.9);
-    rim.position.set(-2, 1.5, -3);
-    scene.add(rim);
+    key.position.set(1.5, 2, 0);
+    camera.add(key);
+    const fill = new THREE.DirectionalLight('#dbe7ff', 0.6);
+    fill.position.set(-2, -0.5, 0);
+    camera.add(fill);
 
-    const body: BodyModel = createBodyModel();
-    scene.add(body.root);
-
-    // Selection: tint the tapped mesh and drop a pulsing pin at the tap point.
-    const highlight = new THREE.MeshStandardMaterial({ roughness: 0.5, emissiveIntensity: 0.45 });
-    // White pin so it stands out against the tinted part; the halo carries the severity colour.
-    const pinMaterial = new THREE.MeshBasicMaterial({ color: '#ffffff', depthTest: false, transparent: true });
-    const haloMaterial = new THREE.MeshBasicMaterial({ depthTest: false, transparent: true, depthWrite: false });
-    const pinGeometry = new THREE.SphereGeometry(0.014, 16, 12);
-    const pin = new THREE.Mesh(pinGeometry, pinMaterial);
-    const halo = new THREE.Mesh(pinGeometry, haloMaterial);
-    pin.renderOrder = 11;
-    halo.renderOrder = 10;
-    const marker = new THREE.Group();
-    marker.add(halo, pin);
-    marker.visible = false;
-    body.root.add(marker);
-
-    let selected: { mesh: THREE.Mesh; original: THREE.Material; part: BodyPart } | null = null;
-    let appliedColor = '';
-
-    const clearSelection = () => {
-      if (selected) selected.mesh.material = selected.original;
-      selected = null;
-      marker.visible = false;
-    };
+    sceneRef.current = scene;
+    if (bodyRef.current) showBody(bodyRef.current);
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const partOf = (hit: THREE.Intersection) => hit.object.userData.part as BodyPart;
-
     pickRef.current = (x, y) => {
-      if (!view.width || !view.height) return;
+      const body = bodyRef.current;
+      if (!body || !view.width || !view.height) return null;
       pointer.set((x / view.width) * 2 - 1, -(y / view.height) * 2 + 1);
-      scene.updateMatrixWorld();
       raycaster.setFromCamera(pointer, camera);
-      // Judge visibility by where the layer slider is heading, so a tap made
-      // mid-fade lands on what the patient is about to see.
-      const targetDepth = props.current.depth;
-      const hits = raycaster
-        .intersectObjects(body.pickables, false)
-        .filter((h) => layerOpacityAt(partOf(h).layer, targetDepth) >= 0.5);
-      if (hits.length === 0) return;
-
-      // Prefer the layer the slider is on, so e.g. organs win over ribs.
-      const currentLayer = Math.round(targetDepth);
-      const hit = hits.find((h) => partOf(h).layer === currentLayer) ?? hits[0];
-      const mesh = hit.object as THREE.Mesh;
-      const part = partOf(hit);
-      const local = body.root.worldToLocal(hit.point.clone());
-      const back = local.z < mesh.position.z;
-
-      clearSelection();
-      selected = { mesh, original: mesh.material as THREE.Material, part };
-      mesh.material = highlight;
-      marker.position.copy(local);
-      marker.visible = true;
-
-      props.current.onSelect({
-        key: `${part.id}:${part.side ?? 'center'}:${back && part.backName ? 'back' : 'front'}`,
-        label: partLabel(part, back),
-        layer: part.layer,
-      });
+      const [hit] = raycaster.intersectObject(body.surface, true);
+      return hit ? hit.point.clone() : null;
     };
 
     let removeWheel = () => {};
     if (Platform.OS === 'web') {
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
-        view.zoomTarget = clamp(view.zoomTarget * (1 + e.deltaY * 0.0015), MIN_ZOOM, MAX_ZOOM);
+        // offsetX/Y are unreliable under browser device emulation; use the rect.
+        const rect = canvas.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * view.width;
+        const y = ((e.clientY - rect.top) / rect.height) * view.height;
+        zoomAt(x, y, 1 + e.deltaY * 0.0015, false);
       };
       canvas.addEventListener('wheel', onWheel, { passive: false });
       removeWheel = () => canvas.removeEventListener('wheel', onWheel);
@@ -271,17 +378,19 @@ export function BodyViewer({ depth, highlightColor, selection, onSelect, backgro
       const aspect = width / height;
       const halfTan = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
       const byHeight = (BODY_HEIGHT * 0.56) / halfTan;
-      const byWidth = 0.38 / (halfTan * aspect);
+      // Small margin so outstretched hands don't touch the edges.
+      const byWidth = (view.bodyRadius * 1.08) / (halfTan * aspect);
       view.fitDistance = Math.max(byHeight, byWidth);
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
+      view.needsFit = false;
     };
     fitBody();
 
-    let lastFacing: 'front' | 'back' = 'front';
+    const offset = new THREE.Vector3();
+    let lastFacing: Facing = 'front';
     let frame = 0;
-    const startTime = performance.now();
-    let lastTime = startTime;
+    let lastTime = performance.now();
 
     const render = () => {
       frame = requestAnimationFrame(render);
@@ -297,56 +406,65 @@ export function BodyViewer({ depth, highlightColor, selection, onSelect, backgro
         width = gl.drawingBufferWidth;
         height = gl.drawingBufferHeight;
         renderer.setSize(width, height, false);
-        fitBody();
+        view.needsFit = true;
       }
+      if (view.needsFit) fitBody();
 
-      if (!view.dragging) {
-        view.rotY += view.spin * frames;
-        view.spin *= Math.pow(0.92, frames);
-        if (Math.abs(view.spin) < 1e-4) view.spin = 0;
+      if (!view.touching) {
+        view.yaw += view.spinYaw * frames;
+        view.pitch += view.spinPitch * frames;
+        const decay = Math.pow(0.92, frames);
+        view.spinYaw *= decay;
+        view.spinPitch *= decay;
+        if (Math.abs(view.spinYaw) < 1e-4) view.spinYaw = 0;
+        if (Math.abs(view.spinPitch) < 1e-4) view.spinPitch = 0;
       }
       if (view.turn !== 0) {
         const step = Math.abs(view.turn) < 0.002 ? view.turn : view.turn * ease(0.14);
-        view.rotY += step;
+        view.yaw += step;
         view.turn -= step;
       }
+      if (view.levelling) {
+        view.pitch += (0 - view.pitch) * ease(0.15);
+        if (Math.abs(view.pitch) < 1e-3) view.levelling = false;
+      }
+      view.pitch = clamp(view.pitch, -MAX_PITCH, MAX_PITCH);
 
-      view.zoom += (view.zoomTarget - view.zoom) * ease(0.18);
-      // Panning only makes sense when zoomed in; the allowed range grows with zoom.
-      const maxPan = (BODY_HEIGHT / 2) * 0.9 * clamp((1 - view.zoom) / (1 - MIN_ZOOM), 0, 1);
-      const clampedPan = clamp(view.panY, -maxPan, maxPan);
-      view.panY = view.dragging ? clampedPan : view.panY + (clampedPan - view.panY) * ease(0.25);
+      // Keep the body in view: the further out, the closer to the centre the
+      // camera has to look (fully centred at the default zoom).
+      const freedom = clamp(((1 - view.zoomGoal) / (1 - MIN_ZOOM)) * 1.6, 0, 1);
+      const limitX = view.touching ? view.bodyRadius : view.bodyRadius * freedom;
+      const limitY = (view.touching ? 1 : freedom) * (BODY_HEIGHT / 2);
+      const limitZ = (view.touching ? 1 : freedom) * 0.3;
+      view.targetGoal.set(
+        clamp(view.targetGoal.x, -limitX, limitX),
+        clamp(view.targetGoal.y, -limitY, limitY),
+        clamp(view.targetGoal.z, -limitZ, limitZ),
+      );
 
-      view.depth += (props.current.depth - view.depth) * ease(0.2);
-      body.setDepth(view.depth);
-      body.root.rotation.y = view.rotY;
+      view.zoom += (view.zoomGoal - view.zoom) * ease(0.2);
+      view.target.lerp(view.targetGoal, ease(0.2));
 
       const distance = view.fitDistance * view.zoom;
-      camera.position.set(0, view.panY, distance);
-      camera.lookAt(0, view.panY, 0);
+      offset.set(
+        Math.sin(view.yaw) * Math.cos(view.pitch),
+        Math.sin(view.pitch),
+        Math.cos(view.yaw) * Math.cos(view.pitch),
+      );
+      camera.position.copy(view.target).addScaledVector(offset, distance);
+      camera.lookAt(view.target);
+      camera.updateMatrixWorld();
+      view.right.setFromMatrixColumn(camera.matrixWorld, 0);
+      view.up.setFromMatrixColumn(camera.matrixWorld, 1);
 
-      if (selected && !props.current.selection) clearSelection();
-      if (selected) {
-        if (appliedColor !== props.current.highlightColor) {
-          appliedColor = props.current.highlightColor;
-          highlight.color.set(appliedColor);
-          highlight.emissive.set(appliedColor);
-          haloMaterial.color.set(appliedColor);
-        }
-        const opacity = body.opacityOf(selected.part.layer);
-        highlight.opacity = opacity;
-        highlight.transparent = opacity < 0.999;
-        highlight.depthWrite = opacity >= 0.999;
-        highlight.visible = opacity > 0.01;
-
-        const pulse = (((now - startTime) / 1000) % 1.4) / 1.4;
-        halo.scale.setScalar(1.3 + pulse * 2.4);
-        haloMaterial.opacity = 0.8 * (1 - pulse);
-        // Keep the pin a similar size on screen when zoomed in.
-        marker.scale.setScalar(0.6 + 0.4 * view.zoom);
-      }
-
-      const nowFacing = Math.cos(view.rotY) >= 0 ? 'front' : 'back';
+      const nowFacing: Facing =
+        view.pitch > THREE.MathUtils.degToRad(55)
+          ? 'top'
+          : view.pitch < -THREE.MathUtils.degToRad(55)
+            ? 'bottom'
+            : Math.cos(view.yaw) >= 0
+              ? 'front'
+              : 'back';
       if (nowFacing !== lastFacing) {
         lastFacing = nowFacing;
         setFacing(nowFacing);
@@ -360,11 +478,7 @@ export function BodyViewer({ depth, highlightColor, selection, onSelect, backgro
     cleanupRef.current = () => {
       cancelAnimationFrame(frame);
       removeWheel();
-      body.dispose();
-      highlight.dispose();
-      pinMaterial.dispose();
-      haloMaterial.dispose();
-      pinGeometry.dispose();
+      sceneRef.current = null;
       try {
         renderer.dispose();
       } catch {
@@ -373,30 +487,41 @@ export function BodyViewer({ depth, highlightColor, selection, onSelect, backgro
     };
   };
 
-  const zoomBy = (factor: number) => {
-    view.zoomTarget = clamp(view.zoomTarget * factor, MIN_ZOOM, MAX_ZOOM);
+  const measure = () => {
+    containerRef.current?.measureInWindow((x, y, w, h) => {
+      Object.assign(view, { pageX: x, pageY: y, width: w, height: h });
+    });
   };
 
   return (
     <View
+      ref={containerRef}
       style={[styles.container, { backgroundColor: background }]}
       onLayout={(e) => {
         view.width = e.nativeEvent.layout.width;
         view.height = e.nativeEvent.layout.height;
+        measure();
       }}
     >
-      <View style={StyleSheet.absoluteFill} {...responder.panHandlers}>
+      <View style={StyleSheet.absoluteFill} {...responder.panHandlers} onTouchStart={measure}>
         <GLView style={StyleSheet.absoluteFill} onContextCreate={onContextCreate} />
       </View>
 
+      {(loading || failed) && (
+        <View pointerEvents="none" style={styles.status}>
+          {loading ? <ActivityIndicator color="#64748b" /> : <Text style={styles.statusText}>Couldn't load the 3D body.</Text>}
+        </View>
+      )}
+
       <View pointerEvents="none" style={styles.facingChip}>
-        <Text style={styles.facingText}>{facing === 'front' ? 'Front view' : 'Back view'}</Text>
+        <Text style={styles.facingText}>{FACING_LABELS[facing]}</Text>
       </View>
 
       <View style={styles.controls}>
-        <ControlButton label="−" accessibilityLabel="Zoom out" onPress={() => zoomBy(1.25)} />
+        <ControlButton label="−" accessibilityLabel="Zoom out" onPress={() => zoomCentre(1.4)} />
         <ControlButton label="⟲ Turn" accessibilityLabel="Turn the body around" onPress={() => (view.turn += Math.PI)} wide />
-        <ControlButton label="+" accessibilityLabel="Zoom in" onPress={() => zoomBy(0.8)} />
+        <ControlButton label="+" accessibilityLabel="Zoom in" onPress={() => zoomCentre(1 / 1.4)} />
+        <ControlButton label="Reset" accessibilityLabel="Reset the view" onPress={reset} wide />
       </View>
     </View>
   );
@@ -421,6 +546,15 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
   },
+  status: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statusText: {
+    fontSize: 14,
+    color: '#64748b',
+  },
   facingChip: {
     position: 'absolute',
     top: 8,
@@ -440,7 +574,7 @@ const styles = StyleSheet.create({
     bottom: 10,
     alignSelf: 'center',
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   control: {
     minWidth: 36,
@@ -458,13 +592,13 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   controlWide: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
   },
   controlPressed: {
     backgroundColor: '#eef2f7',
   },
   controlText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: '#0f172a',
   },
