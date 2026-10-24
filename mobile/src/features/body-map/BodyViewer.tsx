@@ -328,7 +328,7 @@ export function BodyViewer({ sex, background }: Props) {
             getContext: () => gl,
           } as unknown as HTMLCanvasElement);
 
-    const renderer = new THREE.WebGLRenderer({ canvas, context: gl });
+    const renderer = createRenderer(canvas, gl);
     renderer.setPixelRatio(1);
     renderer.setSize(width, height, false);
     renderer.setClearColor(background, 1);
@@ -525,6 +525,26 @@ export function BodyViewer({ sex, background }: Props) {
       </View>
     </View>
   );
+}
+
+/**
+ * three.js rejects any context that is `instanceof WebGLRenderingContext`
+ * (WebGL 1). expo-gl's native WebGL2 context deliberately inherits from that
+ * class, so hide the global while the renderer checks it.
+ */
+function createRenderer(canvas: HTMLCanvasElement, gl: ExpoWebGLRenderingContext): THREE.WebGLRenderer {
+  if (Platform.OS === 'web') return new THREE.WebGLRenderer({ canvas, context: gl });
+  if (!(gl as unknown as { supportsWebGL2?: boolean }).supportsWebGL2) {
+    throw new Error('This device does not support WebGL2, which the 3D body needs.');
+  }
+  const scope = globalThis as { WebGLRenderingContext?: unknown };
+  const original = scope.WebGLRenderingContext;
+  scope.WebGLRenderingContext = undefined;
+  try {
+    return new THREE.WebGLRenderer({ canvas, context: gl });
+  } finally {
+    scope.WebGLRenderingContext = original;
+  }
 }
 
 function ControlButton({ label, accessibilityLabel, onPress, wide }: { label: string; accessibilityLabel: string; onPress: () => void; wide?: boolean }) {
